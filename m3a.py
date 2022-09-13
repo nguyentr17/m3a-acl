@@ -1,5 +1,5 @@
 import tensorflow as tf
-from tensorflow import keras
+#from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.models import load_model
@@ -10,11 +10,25 @@ from sklearn.metrics import *
 import pandas as pd
 import numpy as np
 import math
-# %matplotlib inline
-import matplotlib.pyplot as plt
-import gc
+import re
 
-#Hyper Parameters
+import logging
+# %matplotlib inline
+#import matplotlib.pyplot as plt
+#import gc
+
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
+formatter = logging.Formatter(
+    "%(levelname)s <%(thread)d> [%(asctime)s] %(name)s <%(filename)s:%(lineno)d> %(message)s"
+)
+log_handler = logging.StreamHandler()
+log_handler.setLevel(logging.INFO)
+log_handler.setFormatter(formatter)
+LOGGER.addHandler(log_handler)
+
+
+# Hyper Parameters
 batch_size = 64
 learning_rate = 0.001
 
@@ -28,8 +42,9 @@ movement_dropout = 0.0
 
 """# M3A Function Declaration"""
 
+
 class MultiHeadSelfAttention(layers.Layer):
-    def __init__(self, embed_dim, num_heads=8,**kwargs):
+    def __init__(self, embed_dim, num_heads=8, **kwargs):
         super(MultiHeadSelfAttention, self).__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -89,15 +104,16 @@ class MultiHeadSelfAttention(layers.Layer):
         )  # (batch_size, seq_len, embed_dim)
         return output
 
+
 class TransformerBlock(layers.Layer):
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1,**kwargs):
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1, **kwargs):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.ff_dim = ff_dim
         super(TransformerBlock, self).__init__(**kwargs)
         self.att = MultiHeadSelfAttention(self.embed_dim, self.num_heads)
-        self.ffn = keras.Sequential(
-            [Dense(self.ff_dim, activation="relu"), Dense(self.embed_dim),]
+        self.ffn = tf.keras.Sequential(
+            [Dense(self.ff_dim, activation="relu"), Dense(self.embed_dim), ]
         )
         self.layernorm1 = LayerNormalization(epsilon=1e-6)
         self.layernorm2 = LayerNormalization(epsilon=1e-6)
@@ -121,284 +137,301 @@ class TransformerBlock(layers.Layer):
         ffn_output = self.dropout2(ffn_output, training=training)
         return self.layernorm2(out1 + ffn_output)
 
+
 def createModelV(emd1, emd2, heads, dimFF, dimH, drop, maxlen, maxSpeaker):
-  embed_dim1 = emd1   # Embedding size for Text 
-  embed_dim2 = emd2   # Embedding size for Audio
-  num_heads = heads   # Number of attention heads
-  ff_dim = dimFF      # Hidden layer size in feed forward network inside transformer
-  hidden_dim = dimH   # Hidden layer Dimension
-  dropout = drop      # Dropout
+    embed_dim1 = emd1  # Embedding size for Text
+    embed_dim2 = emd2  # Embedding size for Audio
+    num_heads = heads  # Number of attention heads
+    ff_dim = dimFF  # Hidden layer size in feed forward network inside transformer
+    hidden_dim = dimH  # Hidden layer Dimension
+    dropout = drop  # Dropout
 
-  text = Input(shape=(maxlen,embed_dim1))
-  audio = Input(shape=(maxlen,embed_dim2))
-  pos = Input(shape=(maxlen,embed_dim2))
-  speak = Input(shape=(maxLen,maxSpeaker+1))
+    text = Input(shape=(maxlen, embed_dim1))
+    audio = Input(shape=(maxlen, embed_dim2))
+    pos = Input(shape=(maxlen, embed_dim2))
+    speak = Input(shape=(maxLen, maxSpeaker + 1))
 
-  newtext = TimeDistributed(Dense(62))(text)
+    newtext = TimeDistributed(Dense(62))(text)
 
-  attentionText2 = TimeDistributed(Dense(62, activation='softmax'))(newtext)
-  attentionAudio2 = TimeDistributed(Dense(62, activation='softmax'))(audio)
-  attentionSum = attentionText2+attentionAudio2
-  attentionText2 = attentionText2/attentionSum
-  attentionAudio2 = attentionAudio2/attentionSum
+    attentionText2 = TimeDistributed(Dense(62, activation='softmax'))(newtext)
+    attentionAudio2 = TimeDistributed(Dense(62, activation='softmax'))(audio)
+    attentionSum = attentionText2 + attentionAudio2
+    attentionText2 = attentionText2 / attentionSum
+    attentionAudio2 = attentionAudio2 / attentionSum
 
-  attendedText = newtext*attentionText2 
-  attendedAudio = audio*attentionAudio2 
+    attendedText = newtext * attentionText2
+    attendedAudio = audio * attentionAudio2
 
-  fused = attendedText*attentionText2 + attendedAudio*attentionAudio2 + pos
-  fusedSpeaker = Concatenate(axis=2)([fused,speak])
+    fused = attendedText * attentionText2 + attendedAudio * attentionAudio2 + pos
+    fusedSpeaker = Concatenate(axis=2)([fused, speak])
 
-  transformer_block = TransformerBlock(embed_dim2+maxSpeaker+1, num_heads, ff_dim, 0)
-  x = transformer_block(fusedSpeaker)
-  x = layers.GlobalAveragePooling1D()(x)
-  x = layers.Dense(hidden_dim, activation="relu")(x)
-  x = layers.Dropout(dropout)(x)
-  outputs = layers.Dense(1, activation="relu")(x)
+    transformer_block = TransformerBlock(embed_dim2 + maxSpeaker + 1, num_heads, ff_dim, 0)
+    x = transformer_block(fusedSpeaker)
+    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.Dense(hidden_dim, activation="relu")(x)
+    x = layers.Dropout(dropout)(x)
+    outputs = layers.Dense(1, activation="relu")(x)
 
-  model = keras.Model(inputs=[text,audio,pos,speak], outputs=outputs)
-  return model
+    model = tf.keras.Model(inputs=[text, audio, pos, speak], outputs=outputs)
+    return model
+
 
 def createModelC(emd1, emd2, heads, dimFF, dimH, drop, maxlen, maxSpeaker):
-  embed_dim1 = emd1   # Embedding size for Text 
-  embed_dim2 = emd2   # Embedding size for Audio
-  num_heads = heads   # Number of attention heads
-  ff_dim = dimFF      # Hidden layer size in feed forward network inside transformer
-  hidden_dim = dimH   # Hidden layer Dimension
-  dropout = drop      # Dropout
-  
-  text = Input(shape=(maxlen,embed_dim1))
-  audio = Input(shape=(maxlen,embed_dim2))
-  pos = Input(shape=(maxlen,embed_dim2))
-  speak = Input(shape=(maxLen,maxSpeaker+1))
+    embed_dim1 = emd1  # Embedding size for Text
+    embed_dim2 = emd2  # Embedding size for Audio
+    num_heads = heads  # Number of attention heads
+    ff_dim = dimFF  # Hidden layer size in feed forward network inside transformer
+    hidden_dim = dimH  # Hidden layer Dimension
+    dropout = drop  # Dropout
 
-  newtext = TimeDistributed(Dense(62))(text)
+    text = Input(shape=(maxlen, embed_dim1))
+    audio = Input(shape=(maxlen, embed_dim2))
+    pos = Input(shape=(maxlen, embed_dim2))
+    speak = Input(shape=(maxLen, maxSpeaker + 1))
 
-  attentionText1 = TimeDistributed(Dense(62, activation='softmax'))(newtext)
-  attentionAudio1 = TimeDistributed(Dense(62, activation='softmax'))(audio)
-  attentionText2 = TimeDistributed(Dense(62, activation='softmax'))(newtext)
-  attentionAudio2 = TimeDistributed(Dense(62, activation='softmax'))(audio)
-  attentionSum = attentionText2+attentionAudio2
-  attentionText2 = attentionText2/attentionSum
-  attentionAudio2 = attentionAudio2/attentionSum
+    newtext = TimeDistributed(Dense(62))(text)
 
-  attendedText = newtext*attentionText2 
-  attendedAudio = audio*attentionAudio2 
+    attentionText1 = TimeDistributed(Dense(62, activation='softmax'))(newtext)
+    attentionAudio1 = TimeDistributed(Dense(62, activation='softmax'))(audio)
+    attentionText2 = TimeDistributed(Dense(62, activation='softmax'))(newtext)
+    attentionAudio2 = TimeDistributed(Dense(62, activation='softmax'))(audio)
+    attentionSum = attentionText2 + attentionAudio2
+    attentionText2 = attentionText2 / attentionSum
+    attentionAudio2 = attentionAudio2 / attentionSum
 
-  fused = attendedText*attentionText2 + attendedAudio*attentionAudio2 + pos
-  fusedSpeaker = Concatenate(axis=2)([fused,speak])
+    attendedText = newtext * attentionText2
+    attendedAudio = audio * attentionAudio2
 
-  transformer_block = TransformerBlock(embed_dim2+maxSpeaker+1, num_heads, ff_dim, 0)
-  x = transformer_block(fusedSpeaker)
-  x = layers.GlobalAveragePooling1D()(x)
-  x = layers.Dense(hidden_dim, activation="relu")(x)
-  x = layers.Dropout(dropout)(x)
-  outputs = layers.Dense(1, activation="sigmoid")(x)
+    fused = attendedText * attentionText2 + attendedAudio * attentionAudio2 + pos
+    fusedSpeaker = Concatenate(axis=2)([fused, speak])
 
-  model = keras.Model(inputs=[text,audio,pos,speak], outputs=outputs)
-  return model
+    transformer_block = TransformerBlock(embed_dim2 + maxSpeaker + 1, num_heads, ff_dim, 0)
+    x = transformer_block(fusedSpeaker)
+    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.Dense(hidden_dim, activation="relu")(x)
+    x = layers.Dropout(dropout)(x)
+    outputs = layers.Dense(1, activation="sigmoid")(x)
 
-"""# M3A Data Loading and Processing"""
+    model = tf.keras.Model(inputs=[text, audio, pos, speak], outputs=outputs)
+    return model
 
-YVals = pd.read_csv("Y_Volatility.csv")
-files = YVals['File Name']
-dates = YVals['Date']
 
-path_to_files = 'Dataset/' # insert path with last /
+if __name__ == "__main__":
+    """# M3A Data Loading and Processing"""
+    LOGGER.info("Step 1. Start data loading and processing")
+    YVals = pd.read_csv("Y_Volatility.csv")
+    files = YVals['File Name']
+    # Replace '&' with '_'
+    files = files.transform(lambda x: re.sub("(&|')", "_",x))
+    dates = YVals['Date']
 
-X = []
-maxLen = 0
-index = 1
-for i in tqdm(range(len(files))):
-  f = files[i][:-4]
-  d = str(dates[i]).split('/')
-  date = d[-1] + '-'
-  if(len(d[0]) == 2):
-    date += d[0] + '-'
-  else:
-    date += '0'+d[0]+'-'
-  if(len(d[1]) == 2):
-    date += d[1] 
-  else:
-    date += '0'+d[1]
-  folder = path_to_files + f + '_' + date+'/'
-  df = pd.read_csv(folder+"Text.csv")
-  df = df.drop([df.columns[0], df.columns[1]],axis=1)
-  xEmb = df.to_numpy()
-  X.append(xEmb)
-  maxLen = max(maxLen, xEmb.shape[0])
-  # print(index,f)
-  index += 1
+    path_to_files = 'Dataset/'  # insert path with last /
 
-for i in tqdm(range(len(X))):
-  xEmb = X[i]
-  pad = maxLen-xEmb.shape[0]
-  if pad != 0:
-    padding = np.zeros((pad,768))
-    xEmb = np.concatenate((padding,xEmb),axis=0)
-  X[i] = xEmb
-X_text = np.array(X)
+    X = []
+    maxLen = 0
+    index = 1
+    for i in tqdm(range(len(files))):
+        f = files[i][:-4]
+        d = str(dates[i]).split('/')
+        date = d[-1] + '-'
+        if (len(d[0]) == 2):
+            date += d[0] + '-'
+        else:
+            date += '0' + d[0] + '-'
+        if (len(d[1]) == 2):
+            date += d[1]
+        else:
+            date += '0' + d[1]
+        folder = path_to_files + f + '_' + date + '/'
+        df = pd.read_csv(folder + "Text.csv")
+        df = df.drop([df.columns[0], df.columns[1]], axis=1)
+        xEmb = df.to_numpy()
+        X.append(xEmb)
+        maxLen = max(maxLen, xEmb.shape[0])
+        # print(index,f)
+        index += 1
 
-Xspeak = []
-maxSpeaker = 0
-index = 1
-for i in tqdm(range(len(files))):
-  f = files[i][:-4]
-  d = str(dates[i]).split('/')
-  date = d[-1] + '-'
-  if(len(d[0]) == 2):
-    date += d[0] + '-'
-  else:
-    date += '0'+d[0]+'-'
-  if(len(d[1]) == 2):
-    date += d[1] 
-  else:
-    date += '0'+d[1]
-  folder = path_to_files + f + '_' + date+'/'
-  df = pd.read_csv(folder+"Text.csv")
-  speaker = df['Speaker']
-  Xspeak.append(speaker)
-  maxSpeaker = max(maxSpeaker,max(speaker))
+    for i in tqdm(range(len(X))):
+        xEmb = X[i]
+        pad = maxLen - xEmb.shape[0]
+        if pad != 0:
+            padding = np.zeros((pad, 768))
+            xEmb = np.concatenate((padding, xEmb), axis=0)
+        X[i] = xEmb
+    X_text = np.array(X)
 
-for i in tqdm(range(len(Xspeak))):
-  speaker = Xspeak[i]
-  s = []
-  for j in range(len(speaker)):
-    temp = np.zeros((maxSpeaker+1,))
-    temp[speaker[j]] = 1
-    s.append(temp)
-  s = np.array(s)
-  pad = maxLen-speaker.shape[0]
-  if pad != 0:
-    padding = np.zeros((pad,maxSpeaker+1))
-    s = np.concatenate((padding,s),axis=0)
-  Xspeak[i] = s
-Xspeak = np.array(Xspeak)
+    Xspeak = []
+    maxSpeaker = 0
+    index = 1
+    for i in tqdm(range(len(files))):
+        f = files[i][:-4]
+        d = str(dates[i]).split('/')
+        date = d[-1] + '-'
+        if (len(d[0]) == 2):
+            date += d[0] + '-'
+        else:
+            date += '0' + d[0] + '-'
+        if (len(d[1]) == 2):
+            date += d[1]
+        else:
+            date += '0' + d[1]
+        folder = path_to_files + f + '_' + date + '/'
+        df = pd.read_csv(folder + "Text.csv")
+        speaker = df['Speaker']
+        Xspeak.append(speaker)
+        maxSpeaker = max(maxSpeaker, max(speaker))
 
-X = []
-maxLen = 0
-index = 1
-for i in tqdm(range(len(files))):
-  f = files[i][:-4]
-  d = str(dates[i]).split('/')
-  date = d[-1] + '-'
-  if(len(d[0]) == 2):
-    date += d[0] + '-'
-  else:
-    date += '0'+d[0]+'-'
-  if(len(d[1]) == 2):
-    date += d[1] 
-  else:
-    date += '0'+d[1]
-  folder = path_to_files + f + '_' + date+'/'
-  df = pd.read_csv(folder+"Audio.csv")
-  df = df.drop([df.columns[0]],axis=1)
-  xEmb = df.to_numpy()
-  X.append(xEmb)
-  maxLen = max(maxLen, xEmb.shape[0])
-  index += 1
+    for i in tqdm(range(len(Xspeak))):
+        speaker = Xspeak[i]
+        s = []
+        for j in range(len(speaker)):
+            temp = np.zeros((maxSpeaker + 1,))
+            temp[speaker[j]] = 1
+            s.append(temp)
+        s = np.array(s)
+        pad = maxLen - speaker.shape[0]
+        if pad != 0:
+            padding = np.zeros((pad, maxSpeaker + 1))
+            s = np.concatenate((padding, s), axis=0)
+        Xspeak[i] = s
+    Xspeak = np.array(Xspeak)
 
-for i in tqdm(range(len(X))):
-  xEmb = X[i]
-  pad = maxLen-xEmb.shape[0]
-  if pad != 0:
-    padding = np.zeros((pad,62))
-    xEmb = np.concatenate((padding,xEmb),axis=0)
-  X[i] = xEmb
-X_audio = np.array(X)
+    X = []
+    maxLen = 0
+    index = 1
+    for i in tqdm(range(len(files))):
+        f = files[i][:-4]
+        d = str(dates[i]).split('/')
+        date = d[-1] + '-'
+        if (len(d[0]) == 2):
+            date += d[0] + '-'
+        else:
+            date += '0' + d[0] + '-'
+        if (len(d[1]) == 2):
+            date += d[1]
+        else:
+            date += '0' + d[1]
+        folder = path_to_files + f + '_' + date + '/'
+        df = pd.read_csv(folder + "Audio.csv")
+        df = df.drop([df.columns[0]], axis=1)
+        xEmb = df.to_numpy()
+        X.append(xEmb)
+        maxLen = max(maxLen, xEmb.shape[0])
+        index += 1
 
-for i in range(len(X)):
-  for j in range(len(X[i])):
-    for k in range(len(X[i][j])):
-      if np.isnan(X[i][j][k]):
-        X_audio[i][j][k] = 0
+    for i in tqdm(range(len(X))):
+        xEmb = X[i]
+        pad = maxLen - xEmb.shape[0]
+        if pad != 0:
+            padding = np.zeros((pad, 62))
+            xEmb = np.concatenate((padding, xEmb), axis=0)
+        X[i] = xEmb
+    X_audio = np.array(X)
 
-pos = np.zeros(X_audio.shape)
-for i in tqdm(range(len(X_audio))):
-  for j in range(len(X_audio[i])):
-    for d in range(len(X_audio[i][j])):
-      if d %2 == 0:
-        p = math.sin(j/pow(10000,d/62))
-        pos[i][j][d] = p
-      else:
-        p = math.cos(j/pow(10000,(d-1)/62))
-        pos[i][j][d] = p
+    for i in range(len(X)):
+        for j in range(len(X[i])):
+            for k in range(len(X[i][j])):
+                if np.isnan(X[i][j][k]):
+                    X_audio[i][j][k] = 0
 
-print(X_text.shape,X_audio.shape,Xspeak.shape,pos.shape)
+    pos = np.zeros(X_audio.shape)
+    for i in tqdm(range(len(X_audio))):
+        for j in range(len(X_audio[i])):
+            for d in range(len(X_audio[i][j])):
+                if d % 2 == 0:
+                    p = math.sin(j / pow(10000, d / 62))
+                    pos[i][j][d] = p
+                else:
+                    p = math.cos(j / pow(10000, (d - 1) / 62))
+                    pos[i][j][d] = p
 
-trainIndex = pd.read_csv("Train_index.csv")
-trainIndex = trainIndex['index']
-testIndex = pd.read_csv("Test_index.csv")
-testIndex = testIndex['index']
+    print(X_text.shape, X_audio.shape, Xspeak.shape, pos.shape)
 
-X_text_Train = X_text[trainIndex]
-X_text_Test = X_text[testIndex]
-X_audio_Train = X_audio[trainIndex]
-X_audio_Test = X_audio[testIndex]
-X_pos_Train = pos[trainIndex]
-X_pos_Test = pos[testIndex]
-X_speak_Train = Xspeak[trainIndex]
-X_speak_Test = Xspeak[testIndex]
+    trainIndex = pd.read_csv("Train_index.csv")
+    trainIndex = trainIndex['index']
+    testIndex = pd.read_csv("Test_index.csv")
+    testIndex = testIndex['index']
 
-YVals = pd.read_csv("Y_Volatility.csv")
-YT3 = YVals['vFuture3']
-YT7 = YVals['vFuture7']
-YT15 = YVals['vFuture15']
+    X_text_Train = X_text[trainIndex]
+    X_text_Test = X_text[testIndex]
+    X_audio_Train = X_audio[trainIndex]
+    X_audio_Test = X_audio[testIndex]
+    X_pos_Train = pos[trainIndex]
+    X_pos_Test = pos[testIndex]
+    X_speak_Train = Xspeak[trainIndex]
+    X_speak_Test = Xspeak[testIndex]
 
-Ys = [YT3,YT7,YT15]
-YPrint = ["Tau 3","Tau 7","Tau 15"]
+    YVals = pd.read_csv("Y_Volatility.csv")
+    YT3 = YVals['vFuture3']
+    YT7 = YVals['vFuture7']
+    YT15 = YVals['vFuture15']
 
-for i in range(3):
-  YTrain = Ys[i][trainIndex]
-  YTest = Ys[i][testIndex]
-  
-  modelN = "ModelV "+YPrint[i]+".h5"
+    Ys = [YT3, YT7, YT15]
+    YPrint = ["Tau 3", "Tau 7", "Tau 15"]
 
-  mc = tf.keras.callbacks.ModelCheckpoint(modelN, monitor='val_loss', verbose=0, save_best_only=True)
-  model = createModelV(768, 62, 3, volatility_feedforward_size, volatility_hidden_dim, volatility_dropout, maxLen,maxSpeaker)
-  model.compile(loss='mean_squared_error', optimizer=Adam(lr = learning_rate))
-  out = model.fit([X_text_Train,X_audio_Train,X_pos_Train,X_speak_Train], YTrain, batch_size=batch_size, epochs=500, validation_data=([X_text_Test,X_audio_Test,X_pos_Test,X_speak_Test],YTest), verbose=0, callbacks=[mc])
-  depen = {'MultiHeadSelfAttention': MultiHeadSelfAttention,'TransformerBlock': TransformerBlock} 
-  model = load_model(modelN, custom_objects=depen)
-  
-  predTest = model.predict([X_text_Train,X_audio_Train,X_pos_Train,X_speak_Train])
-  r = mean_squared_error(YTrain,predTest)
-  print('MSE for Training Set for ',YPrint[i],': ',r)
-  
-  predTest = model.predict([X_text_Test,X_audio_Test,X_pos_Test,X_speak_Test])
-  r = mean_squared_error(YTest,predTest)
-  print('MSE for Testing Set for ',YPrint[i],': ',r)
-  print()
+    LOGGER.info("Step 2. Train models")
+    for i in range(3):
+        YTrain = Ys[i][trainIndex].to_numpy()
+        YTest = Ys[i][testIndex].to_numpy()
 
-YVals = pd.read_csv("Y_Movement.csv")
-YT3 = YVals['YT3']
-YT7 = YVals['YT7']
-YT15 = YVals['YT15']
+        modelN = "ModelV " + YPrint[i] + ".h5"
+        LOGGER.info(f"- Model {modelN}")
 
-Ys = [YT3,YT7,YT15]
-YPrint = ["Tau 3","Tau 7","Tau 15"]
+        mc = tf.keras.callbacks.ModelCheckpoint(modelN, monitor='val_loss', verbose=0, save_best_only=True)
+        model = createModelV(768, 62, 3, volatility_feedforward_size, volatility_hidden_dim, volatility_dropout, maxLen,
+                             maxSpeaker)
+        LOGGER.info(f"   Model summary:")
+        model.summary()
+        model.compile(loss='mean_squared_error', optimizer=Adam(lr=learning_rate))
+        out = model.fit([X_text_Train, X_audio_Train, X_pos_Train, X_speak_Train], YTrain, batch_size=batch_size,
+                        epochs=500, validation_data=([X_text_Test, X_audio_Test, X_pos_Test, X_speak_Test], YTest),
+                        verbose=0, callbacks=[mc])
+        depen = {'MultiHeadSelfAttention': MultiHeadSelfAttention, 'TransformerBlock': TransformerBlock}
+        model = load_model(modelN, custom_objects=depen)
 
-for i in range(3):
-  YTrain = Ys[i][trainIndex]
-  YTest = Ys[i][testIndex]
+        predTest = model.predict([X_text_Train, X_audio_Train, X_pos_Train, X_speak_Train])
+        r = mean_squared_error(YTrain, predTest)
+        print('MSE for Training Set for ', YPrint[i], ': ', r)
 
-  modelN = "ModelC "+YPrint[i]+".h5"
+        predTest = model.predict([X_text_Test, X_audio_Test, X_pos_Test, X_speak_Test])
+        r = mean_squared_error(YTest, predTest)
+        print('MSE for Testing Set for ', YPrint[i], ': ', r)
+        print()
 
-  mc = tf.keras.callbacks.ModelCheckpoint(modelN, monitor='val_accuracy', verbose=0, save_best_only=True)
-  model = createModelC(768, 62, 3, movement_feedforward_size, movement_hidden_dim, movement_dropout, maxLen,maxSpeaker)
-  model.compile(loss='binary_crossentropy', optimizer=Adam(lr = learning_rate), metrics=['accuracy'])
-  out = model.fit([X_text_Train,X_audio_Train,X_pos_Train,X_speak_Train], YTrain, batch_size=batch_size, epochs=500, validation_data=([X_text_Test,X_audio_Test,X_pos_Test,X_speak_Test],YTest), verbose=0, callbacks=[mc])
-  depen = {'MultiHeadSelfAttention': MultiHeadSelfAttention,'TransformerBlock': TransformerBlock} 
-  model = load_model(modelN, custom_objects=depen)
-  
-  predTest = model.predict([X_text_Train,X_audio_Train,X_pos_Train,X_speak_Train]).round()
-  mcc = matthews_corrcoef(YTrain, predTest)
-  f1 = f1_score(YTrain,predTest)
-  print('F1 for Training Set for ',YPrint[i],': ',f1)
-  print('MCC for Training Set for ',YPrint[i],': ',mcc)  
-  
-  predTest = model.predict([X_text_Test,X_audio_Test,X_pos_Test,X_speak_Test]).round()
-  mcc = matthews_corrcoef(YTest, predTest)
-  f1 = f1_score(YTest,predTest)
-  print('F1 for Testing Set for ',YPrint[i],': ',f1)
-  print('MCC for Testing Set for ',YPrint[i],': ',mcc)
-  print()
+    YVals = pd.read_csv("Y_Movement.csv")
+    YT3 = YVals['YT3']
+    YT7 = YVals['YT7']
+    YT15 = YVals['YT15']
+
+    Ys = [YT3, YT7, YT15]
+    YPrint = ["Tau 3", "Tau 7", "Tau 15"]
+
+    for i in range(3):
+        YTrain = Ys[i][trainIndex]
+        YTest = Ys[i][testIndex]
+
+        modelN = "ModelC " + YPrint[i] + ".h5"
+        LOGGER.info(f"- Model {modelN}")
+
+        mc = tf.keras.callbacks.ModelCheckpoint(modelN, monitor='val_accuracy', verbose=0, save_best_only=True)
+        model = createModelC(768, 62, 3, movement_feedforward_size, movement_hidden_dim, movement_dropout, maxLen,
+                             maxSpeaker)
+        model.compile(loss='binary_crossentropy', optimizer=Adam(lr=learning_rate), metrics=['accuracy'])
+        out = model.fit([X_text_Train, X_audio_Train, X_pos_Train, X_speak_Train], YTrain, batch_size=batch_size,
+                        epochs=500, validation_data=([X_text_Test, X_audio_Test, X_pos_Test, X_speak_Test], YTest),
+                        verbose=0, callbacks=[mc])
+        depen = {'MultiHeadSelfAttention': MultiHeadSelfAttention, 'TransformerBlock': TransformerBlock}
+        model = load_model(modelN, custom_objects=depen)
+
+        predTest = model.predict([X_text_Train, X_audio_Train, X_pos_Train, X_speak_Train]).round()
+        mcc = matthews_corrcoef(YTrain, predTest)
+        f1 = f1_score(YTrain, predTest)
+        print('F1 for Training Set for ', YPrint[i], ': ', f1)
+        print('MCC for Training Set for ', YPrint[i], ': ', mcc)
+
+        predTest = model.predict([X_text_Test, X_audio_Test, X_pos_Test, X_speak_Test]).round()
+        mcc = matthews_corrcoef(YTest, predTest)
+        f1 = f1_score(YTest, predTest)
+        print('F1 for Testing Set for ', YPrint[i], ': ', f1)
+        print('MCC for Testing Set for ', YPrint[i], ': ', mcc)
+        print()
